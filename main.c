@@ -70,7 +70,6 @@ void main(void) {
 void main() {
     initialiseTests();
     testPwm();
-    testI2c();
     finaliseTests();
     while(1);
 }
