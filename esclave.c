@@ -4,11 +4,22 @@
 #include "i2c.h"
 
 /**
- * Point d'entrée des interruptions basse priorité.
+ * Point d'entrée des interruptions pour l'esclave.
  */
-void recepteurInterruptions() {
+void esclaveInterruptions() {
     unsigned char p1, p3;
-    
+
+    if (PIR1bits.TMR1IF) {
+        TMR1 = 3035;
+        ADCON0bits.GO = 1;
+        PIR1bits.TMR1IF = 0;
+    }
+
+    if (PIR1bits.ADIF) {
+        i2cExposeValeur(0, ADRESH);
+        PIR1bits.ADIF = 0;
+    }
+
     if (PIR1bits.TMR2IF) {
         if (pwmEspacement()) {
             p1 = pwmValeur(0);
@@ -23,25 +34,35 @@ void recepteurInterruptions() {
     }
 
     if (PIR1bits.SSP1IF) {
-        if (SSP1STATbits.P) {
-            i2cFinDeReception();
-        } else {
-            if (SSP1STATbits.BF) {
-                if (SSP1STATbits.DA) {
-                    i2cReceptionDonnee(SSP1BUF);
-                } else {
-                    i2cReceptionAdresse(SSP1BUF);
-                }
-            }
-        }
-        PIR1bits.SSP1IF = 0;
+        i2cEsclave();
     }
 }
 
 /**
  * Initialise le hardware pour l'émetteur.
  */
-static void recepteurInitialiseHardware() {
+static void esclaveInitialiseHardware() {
+
+    // Prépare Temporisateur 1 pour 4 interruptions par sec.
+    T1CONbits.TMR1CS = 0;   // Source FOSC/4
+    T1CONbits.T1CKPS = 0;   // Pas de diviseur de fréquence.
+    T1CONbits.T1RD16 = 1;   // Compteur de 16 bits.
+    T1CONbits.TMR1ON = 1;   // Active le temporisateur.
+    
+    PIE1bits.TMR1IE = 1;    // Active les interruptions...
+    IPR1bits.TMR1IP = 0;    // ... de basse priorité.
+    
+    // Active le module de conversion A/D:
+    TRISBbits.RB3 = 1;      // Active RB3 comme entrée.
+    ANSELBbits.ANSB3 = 1;   // Active AN09 comme entrée analogique.
+    ADCON0bits.ADON = 1;    // Allume le module A/D.
+    ADCON0bits.CHS = 9;     // Branche le convertisseur sur AN09
+    ADCON2bits.ADFM = 0;    // Les 8 bits plus signifiants sur ADRESH.
+    ADCON2bits.ACQT = 3;    // Temps d'acquisition à 6 TAD.
+    ADCON2bits.ADCS = 0;    // À 1MHz, le TAD est à 2us.
+
+    PIE1bits.ADIE = 1;      // Active les interruptions A/D
+    IPR1bits.ADIP = 0;      // Interruptions A/D sont de basse priorité.
     
     // Prépare Temporisateur 2 pour PWM (compte jusqu'à 125 en 2ms):
     T2CONbits.T2CKPS = 1;       // Diviseur de fréquence 1:4
@@ -77,13 +98,13 @@ static void recepteurInitialiseHardware() {
 
     SSP1CON1bits.SSPEN = 1;     // Active le module SSP.    
     
-    SSP1ADD = MODULE_SERVO;     // Adresse de l'esclave.
-    SSP1MSK = 0xFF;             // L'esclave n'a qu'une adresse.
+    SSP1ADD = ECRITURE_SERVO_0;   // Adresse de l'esclave.
+    SSP1MSK = I2C_MASQUE_ADRESSES_ESCLAVES;
     SSP1CON1bits.SSPM = 0b1110; // SSP1 en mode esclave I2C avec adresse de 7 bits et interruptions STOP et START.
-    
-    SSP1CON3bits.PCIE = 1;      // Active l'interruption en cas STOP.
+        
+    SSP1CON3bits.PCIE = 0;      // Désactive l'interruption en cas STOP.
     SSP1CON3bits.SCIE = 0;      // Désactive l'interruption en cas de START.
-    SSP1CON3bits.SBCDE = 1;     // Produit une interruption en cas de collision.
+    SSP1CON3bits.SBCDE = 0;     // Désactive l'interruption en cas de collision.
 
     PIE1bits.SSP1IE = 1;        // Interruption en cas de transmission I2C...
     IPR1bits.SSP1IP = 0;        // ... de basse priorité.
@@ -95,27 +116,12 @@ static void recepteurInitialiseHardware() {
 }
 
 /**
- * Point d'entrée pour l'émetteur de radio contrôle.
+ * Point d'entrée pour l'esclave.
  */
-void recepteurMain(void) {
-    Commande commande;
-
-    recepteurInitialiseHardware();
+void esclaveMain(void) {
+    esclaveInitialiseHardware();
     pwmReinitialise();
     i2cReinitialise();
-
-    while(1) {
-        if (i2cCommandeRecue()) {
-            i2cLitCommandeRecue(&commande);
-            switch (commande.commande) {
-                case SERVO1:
-                    pwmPrepareValeur(0);
-                    break;
-                case SERVO2:
-                    pwmPrepareValeur(1);
-                    break;
-            }
-            pwmEtablitValeur(commande.valeur);
-        }
-    }
+    i2cRappelCommande(pwmEtablitValeurCanal);
+    while(1);
 }

@@ -3,52 +3,56 @@
 #include "i2c.h"
 
 /**
- * Point d'entrée des interruptions pour l'émetteur.
+ * Point d'entrée des interruptions pour le maître.
  */
-void emetteurInterruptions() {
-
-    static CommandeType commandeType;
+void maitreInterruptions() {
+    static I2cAdresse i2cAdresse;
     
     if (INTCON3bits.INT1F) {
         INTCON3bits.INT1F = 0;
-        commandeType = SERVO1;
+        i2cAdresse = ECRITURE_SERVO_0;
         ADCON0bits.GO = 1;
     }
     
     if (INTCON3bits.INT2F) {
         INTCON3bits.INT2F = 0;
-        commandeType = SERVO2;
+        i2cAdresse = ECRITURE_SERVO_1;
         ADCON0bits.GO = 1;
     }
     
     if (PIR1bits.ADIF) {
+        i2cPrepareCommandePourEmission(i2cAdresse, ADRESH);
         PIR1bits.ADIF = 0;
-        i2cPrepareCommandePourEmission(MODULE_SERVO, commandeType, ADRESH);
-        SSP1CON2bits.SEN = 1;
     }
     
+    if (PIR1bits.TMR1IF) {
+        TMR1 = 3035;
+        i2cPrepareCommandePourEmission(LECTURE_POTENTIOMETRE, 0);
+        PIR1bits.TMR1IF = 0;
+    }
+
     if (PIR1bits.SSP1IF) {
-        if (SSP1STATbits.P) {
-            if (i2cDonneesDisponiblesPourEmission()) {
-                SSP1CON2bits.SEN = 1;
-            }
-        } else {
-            if (SSP1STATbits.BF == 0) {
-                if (i2cCommandeCompletementEmise()) {
-                    SSP1CON2bits.PEN = 1;
-                } else {
-                    SSP1BUF = i2cRecupereCaracterePourEmission();
-                }
-            }
-        }
+        i2cMaitre();
         PIR1bits.SSP1IF = 0;
     }
 }
 
 /**
- * Initialise le hardware pour l'émetteur.
+ * Initialise le hardware pour le maître.
  */
-static void emetteurInitialiseHardware() {
+static void maitreInitialiseHardware() {
+    // Prépare PORTA pour sortie digitale:
+    TRISA = 0xF0;
+    ANSELA = 0;
+    
+    // Prépare Temporisateur 1 pour 4 interruptions par sec.
+    T1CONbits.TMR1CS = 0;   // Source FOSC/4
+    T1CONbits.T1CKPS = 0;   // Pas de diviseur de fréquence.
+    T1CONbits.T1RD16 = 1;   // Compteur de 16 bits.
+    T1CONbits.TMR1ON = 1;   // Active le temporisateur.
+    
+    PIE1bits.TMR1IE = 1;    // Active les interruptions...
+    IPR1bits.TMR1IP = 0;    // ... de basse priorité.
     
     // Interruptions INT1 et INT2:
     TRISBbits.RB1 = 1;          // Port RB1 comme entrée...
@@ -66,8 +70,8 @@ static void emetteurInitialiseHardware() {
     INTCON2bits.INTEDG2 = 0;    // Flanc descendant.
 
     // Active le module de conversion A/D:
-    TRISBbits.RB3 = 1;      // Active RB4 comme entrée.
-    ANSELBbits.ANSB3 = 1;   // Active AN11 comme entrée analogique.
+    TRISBbits.RB3 = 1;      // Active RB3 comme entrée.
+    ANSELBbits.ANSB3 = 1;   // Active AN09 comme entrée analogique.
     ADCON0bits.ADON = 1;    // Allume le module A/D.
     ADCON0bits.CHS = 9;     // Branche le convertisseur sur AN09
     ADCON2bits.ADFM = 0;    // Les 8 bits plus signifiants sur ADRESH.
@@ -99,12 +103,17 @@ static void emetteurInitialiseHardware() {
     INTCONbits.GIEL = 1;
 }
 
+void etablitValeurPortA(unsigned char adresse, unsigned char valeur) {
+    PORTA = valeur;
+}
+
 /**
  * Point d'entrée pour l'émetteur de radio contrôle.
  */
-void emetteurMain(void) {
-    emetteurInitialiseHardware();
+void maitreMain(void) {
+    maitreInitialiseHardware();
     i2cReinitialise();
+    i2cRappelCommande(etablitValeurPortA);
     pwmReinitialise();
 
     while(1);
